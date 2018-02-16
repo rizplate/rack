@@ -1,6 +1,7 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Conditions": {
+    "ApiFargate": { "Fn::Equals": [ { "Ref": "ApiLaunchType" }, "FARGATE" ] },
     "Autoscale": { "Fn::Equals": [ { "Ref": "Autoscale" }, "Yes" ] },
     "BlankAmi": { "Fn::Equals": [ { "Ref": "Ami" }, "" ] },
     "BlankBuildImage": { "Fn::Equals": [ { "Ref": "BuildImage" }, "" ] },
@@ -75,6 +76,9 @@
     }
   },
   "Outputs": {
+    "ApiLaunchType": {
+      "Value": { "Ref": "ApiLaunchType" }
+    },
     "Autoscale": {
       "Value": { "Fn::If": [ "Autoscale", "true", "false" ] }
     },
@@ -363,6 +367,11 @@
       "Type": "String",
       "Description": "The number of api web processes to run",
       "Default": "2"
+    },
+    "ApiLaunchType": {
+      "Type": "String",
+      "Default": "EC2",
+      "AllowedValues": [ "EC2", "FARGATE" ]
     },
     "ApiMemory": {
       "Type": "String",
@@ -2198,6 +2207,7 @@
         "Cluster": { "Ref": "Cluster" },
         "DeploymentConfiguration": { "MinimumHealthyPercent": "100", "MaximumPercent": "200" },
         "DesiredCount": "1",
+        "LaunchType": { "Fn::If": [ "ApiFargate", "FARGATE", { "Ref": "AWS::NoValue" } ] },
         "PlacementConstraints": [ { "Type": "memberOf", "Expression": "attribute:asg == primary" } ],
         "TaskDefinition": { "Ref": "ApiMonitorTasks" }
       }
@@ -2209,6 +2219,7 @@
         "Cluster": { "Ref": "Cluster" },
         "DeploymentConfiguration": { "MinimumHealthyPercent": "50", "MaximumPercent": "200" },
         "DesiredCount": { "Ref": "ApiCount" },
+        "LaunchType": { "Fn::If": [ "ApiFargate", "FARGATE", { "Ref": "AWS::NoValue" } ] },
         "LoadBalancers": [ { "ContainerName": "web", "ContainerPort": "5443", "LoadBalancerName": { "Ref": "Balancer" } } ],
         "Role": { "Fn::GetAtt": [ "ServiceRole", "Arn" ] },
         "TaskDefinition": { "Ref": "ApiWebTasks" }
@@ -2288,7 +2299,7 @@
         "ContainerDefinitions": [
           {
             "Command": [ "bin/monitor" ],
-            "Cpu": "64",
+            "Cpu": { "Fn::If": [ "ApiFargate", "256", "64" ] },
             "DockerLabels": { "convox.release": { "Ref": "Version" } },
             "Environment": [
               { "Name": "AUTOSCALE", "Value": { "Fn::If": [ "Autoscale", "true", "false" ] } },
@@ -2340,12 +2351,16 @@
                 "awslogs-stream-prefix": "service"
               }
             },
-            "Memory": "64",
+            "Memory": { "Fn::If": [ "ApiFargate", "256", "64" ] },
             "MountPoints": [ { "SourceVolume": "docker", "ContainerPath": "/var/run/docker.sock" } ],
             "Name": "monitor"
           }
         ],
+        "Cpu": { "Fn::If": [ "ApiFargate", "256", { "Ref": "AWS::NoValue" } ] },
         "Family": { "Fn::Sub": "${AWS::StackName}-monitor" },
+        "Memory": { "Fn::If": [ "ApiFargate", "256", { "Ref": "AWS::NoValue" } ] },
+        "NetworkMode": { "Fn::If": [ "ApiFargate", "awsvpc", { "Ref": "AWS::NoValue" } ] },
+        "RequiresCompatibilities": { "Fn::If": [ "ApiFargate", [ "FARGATE" ], { "Ref": "AWS::NoValue" } ] },
         "TaskRoleArn": { "Fn::GetAtt": [ "ApiRole", "Arn" ] },
         "Volumes": [ { "Name": "docker", "Host": { "SourcePath": "/var/run/docker.sock" } } ]
       }
@@ -2356,7 +2371,7 @@
         "ContainerDefinitions": [
           {
             "Command": [ "bin/web" ],
-            "Cpu": "128",
+            "Cpu": { "Fn::If": [ "ApiFargate", "256", "128" ] },
             "DockerLabels": { "convox.release": { "Ref": "Version" } },
             "Environment": [
               { "Name": "AUTOSCALE", "Value": { "Fn::If": [ "Autoscale", "true", "false" ] } },
@@ -2412,22 +2427,32 @@
                 "awslogs-stream-prefix": "service"
               }
             },
-            "MemoryReservation": { "Ref": "ApiMemory" },
+            "MemoryReservation": { "Fn::If": [ "ApiFargate", "512", { "Ref": "ApiMemory" } ] },
             "MountPoints": [ { "SourceVolume": "docker", "ContainerPath": "/var/run/docker.sock" } ],
             "Name": "web",
-            "PortMappings": { "Fn::If": [ "PrivateApi",
+            "PortMappings": { "Fn::If": [ "ApiFargate",
               [
-                { "HostPort": "3100", "ContainerPort": "5442", "Protocol": "tcp" },
-                { "HostPort": "3101", "ContainerPort": "5443", "Protocol": "tcp" }
+                { "HostPort": "5442", "ContainerPort": "5442", "Protocol": "tcp" },
+                { "HostPort": "5443", "ContainerPort": "5443", "Protocol": "tcp" }
               ],
-              [
-                { "HostPort": "3000", "ContainerPort": "5442", "Protocol": "tcp" },
-                { "HostPort": "3001", "ContainerPort": "5443", "Protocol": "tcp" }
-              ]
+              { "Fn::If": [ "PrivateApi",
+                [
+                  { "HostPort": "3100", "ContainerPort": "5442", "Protocol": "tcp" },
+                  { "HostPort": "3101", "ContainerPort": "5443", "Protocol": "tcp" }
+                ],
+                [
+                  { "HostPort": "3000", "ContainerPort": "5442", "Protocol": "tcp" },
+                  { "HostPort": "3001", "ContainerPort": "5443", "Protocol": "tcp" }
+                ]
+              ] }
             ] }
           }
         ],
+        "Cpu": { "Fn::If": [ "ApiFargate", "256", { "Ref": "AWS::NoValue" } ] },
         "Family": { "Fn::Sub": "${AWS::StackName}-web" },
+        "Memory": { "Fn::If": [ "ApiFargate", "512", { "Ref": "AWS::NoValue" } ] },
+        "NetworkMode": { "Fn::If": [ "ApiFargate", "awsvpc", { "Ref": "AWS::NoValue" } ] },
+        "RequiresCompatibilities": { "Fn::If": [ "ApiFargate", [ "FARGATE" ], { "Ref": "AWS::NoValue" } ] },
         "TaskRoleArn": { "Fn::GetAtt": [ "ApiRole", "Arn" ] },
         "Volumes": [ { "Name": "docker", "Host": { "SourcePath": "/var/run/docker.sock" } } ]
       }
