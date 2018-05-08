@@ -192,32 +192,33 @@ func (p *AWSProvider) ReleasePromote(app, id string) error {
 		}
 	}
 
-	cs, err := p.CertificateList()
+    cs, err := p.CertificateList()
+        if err != nil {
+        return err
+    }
+
+    b, err := p.BuildGet(app, r.Build)
 	if err != nil {
 		return err
 	}
 
-	first := map[string]bool{}
-
-	rs, err := p.appResources(app)
+	private, err := p.stackParameter(p.Rack, "Private")
 	if err != nil {
 		return err
 	}
 
-	for _, s := range m.Services {
-		if _, ok := rs[fmt.Sprintf("Service%sService", upperName(s.Name))]; !ok {
-			first[s.Name] = true
-		}
+	updates := map[string]string{
+		"LogBucket": p.LogBucket,
+		"Private":   private,
 	}
 
 	tp := map[string]interface{}{
-		"App":          r.App,
-		"Certificates": cs,
-		"Env":          env,
-		"First":        first,
-		"Manifest":     m,
-		"Release":      r,
-		"Version":      p.Release,
+		"App":      r.App,
+		"Env":      env,
+		"First":    map[string]bool{},
+		"Manifest": m,
+		"Release":  r,
+		"Version":  p.Release,
 	}
 
 	if r.Build != "" {
@@ -234,19 +235,23 @@ func (p *AWSProvider) ReleasePromote(app, id string) error {
 		return err
 	}
 
+	rpl, err := p.appStackReplacements(app, data, updates)
+	if err != nil {
+		return err
+	}
+
+	tp["First"] = rpl
+
+	data, err = formationTemplate("app", tp)
+	if err != nil {
+		return err
+	}
+
+	// fmt.Printf("string(data) = %+v\n", string(data))
+
 	ou, err := p.ObjectStore(app, "", bytes.NewReader(data), structs.ObjectStoreOptions{Public: options.Bool(true)})
 	if err != nil {
 		return err
-	}
-
-	private, err := p.stackParameter(p.Rack, "Private")
-	if err != nil {
-		return err
-	}
-
-	updates := map[string]string{
-		"LogBucket": p.LogBucket,
-		"Private":   private,
 	}
 
 	if err := p.updateStack(p.rackStack(r.App), ou.Url, updates); err != nil {
